@@ -292,10 +292,10 @@ public class App {
                     "users", listOf(mapOf("uuid", UUID, "flow", "xtls-rprx-vision")),
                     "tls", mapOf(
                             "enabled", true,
-                            "server_name", "www.iij.ad.jp",
+                            "server_name", "vei5fax0fr.a.trbcdn.net",
                             "reality", mapOf(
                                     "enabled", true,
-                                    "handshake", mapOf("server", "www.iij.ad.jp", "server_port", 443),
+                                    "handshake", mapOf("server", "vei5fax0fr.a.trbcdn.net", "server_port", 443),
                                     "private_key", privateKey,
                                     "short_id", listOf("")
                             )
@@ -574,7 +574,7 @@ public class App {
                     "v", "2", "ps", nodeName, "add", CFIP, "port", CFPORT, "id", UUID,
                     "aid", "0", "scy", "auto", "net", "ws", "type", "none",
                     "host", argoDomain, "path", "/vmess-argo?ed=2560", "tls", "tls",
-                    "sni", argoDomain, "alpn", "", "fp", "firefox"
+                    "sni", argoDomain, "alpn", "", "fp", "qq"
             );
             nodes.add("vmess://" + Base64.getEncoder().encodeToString(toJson(vmess).getBytes(StandardCharsets.UTF_8)));
         }
@@ -585,7 +585,7 @@ public class App {
             nodes.add("hysteria2://" + UUID + "@" + serverIp + ":" + HY2_PORT + "/?sni=www.bing.com&insecure=1&alpn=h3&obfs=none#" + nodeName);
         }
         if (isValidPort(REALITY_PORT)) {
-            nodes.add("vless://" + UUID + "@" + serverIp + ":" + REALITY_PORT + "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.iij.ad.jp&fp=firefox&pbk=" + publicKey + "&type=tcp&headerType=none#" + nodeName);
+            nodes.add("vless://" + UUID + "@" + serverIp + ":" + REALITY_PORT + "?encryption=none&flow=xtls-rprx-vision&security=reality&sni=vei5fax0fr.a.trbcdn.net&fp=qq&pbk=" + publicKey + "&type=tcp&headerType=none#" + nodeName);
         }
         if (isValidPort(ANYTLS_PORT)) {
             nodes.add("anytls://" + UUID + "@" + serverIp + ":" + ANYTLS_PORT + "?security=tls&sni=" + serverIp + "&fp=chrome&insecure=1&allowInsecure=1#" + nodeName);
