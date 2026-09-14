@@ -14,58 +14,46 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class App {
 
-    private static final HttpClient HTTP = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
+    private static final HttpClient HTTP =
+            HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build();
 
-    private static final Map<String, String> DOT_ENV = loadDotEnv();
+    private static final Map<String, String> DOT_ENV =
+            loadDotEnv();
+
 
     /*
      * ============================================================
-     * Основные настройки
+     * GENERAL
      * ============================================================
      */
 
     private static final String FILE_PATH =
             env("FILE_PATH", ".tmp");
 
-    private static final String SHOW_LOG_RAW =
-            env("SHOW_LOG", "true");
-
     private static final boolean SHOW_LOG =
             !List.of("false", "disable", "no")
-                    .contains(SHOW_LOG_RAW.toLowerCase());
+                    .contains(
+                            env("SHOW_LOG", "true")
+                                    .toLowerCase()
+                    );
 
 
     /*
      * ============================================================
-     * WireGuard / Cloudflare WARP
+     * WIREGUARD / CLOUDFLARE WARP
      * ============================================================
-     *
-     * Эти значения можно задать в .env:
-     *
-     * WG_PRIVATE_KEY=
-     * WG_ADDRESS4=
-     * WG_ADDRESS6=
-     * WG_SERVER=
-     * WG_PORT=
-     * WG_PUBLIC_KEY=
-     * WG_MTU=
-     *
-     * Значения ниже соответствуют прежнему конфигу.
      */
 
     private static final String WG_PRIVATE_KEY =
@@ -113,18 +101,24 @@ public class App {
 
     /*
      * ============================================================
-     * Пути
+     * PATHS
      * ============================================================
      */
 
     private static final Path ROOT =
-            Path.of("").toAbsolutePath();
+            Path.of("")
+                    .toAbsolutePath()
+                    .normalize();
 
     private static final Path RUNTIME_DIR =
-            ROOT.resolve(FILE_PATH).normalize();
+            ROOT.resolve(FILE_PATH)
+                    .normalize();
 
     private static final Path SING_BOX_CONFIG_PATH =
             RUNTIME_DIR.resolve("config.json");
+
+    private static final Path WIREGUARD_CONFIG_PATH =
+            RUNTIME_DIR.resolve("wireguard.conf");
 
     private static final String ARCH =
             detectArch();
@@ -132,43 +126,50 @@ public class App {
 
     /*
      * ============================================================
-     * Main
+     * MAIN
      * ============================================================
      */
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args)
+            throws Exception {
+
         startServer();
     }
 
 
     /*
      * ============================================================
-     * Запуск
+     * START SERVER
      * ============================================================
      */
 
-    private static void startServer() throws Exception {
+    private static void startServer()
+            throws Exception {
 
-        Files.createDirectories(RUNTIME_DIR);
+        Files.createDirectories(
+                RUNTIME_DIR
+        );
 
         cleanupOldFiles();
 
         log("========================================");
-        log("Starting sing-box WireGuard mode");
+        log("       SING-BOX WIREGUARD MODE");
         log("========================================");
 
         log("Architecture: " + ARCH);
-        log("WireGuard server: " + WG_SERVER + ":" + WG_PORT);
+        log(
+                "WireGuard endpoint: "
+                        + WG_SERVER
+                        + ":"
+                        + WG_PORT
+        );
         log("WireGuard MTU: " + WG_MTU);
 
+
         /*
-         * Загружаем только sing-box.
-         *
-         * В старом коде здесь дополнительно загружались:
-         * - cloudflared
-         * - Nezha
-         *
-         * Здесь они полностью убраны.
+         * --------------------------------------------------------
+         * DOWNLOAD ONLY SING-BOX
+         * --------------------------------------------------------
          */
 
         String baseUrl =
@@ -182,47 +183,65 @@ public class App {
 
 
         /*
-         * Генерируем только WireGuard-конфигурацию.
+         * --------------------------------------------------------
+         * GENERATE SING-BOX CONFIG
+         * --------------------------------------------------------
          */
 
-        Map<String, Object> config =
+        Map<String, Object> singBoxConfig =
                 generateSingBoxConfig();
+
 
         Files.writeString(
                 SING_BOX_CONFIG_PATH,
-                toJson(config),
+                toJson(singBoxConfig),
                 StandardCharsets.UTF_8
         );
 
-        log("sing-box config generated:");
-        log(SING_BOX_CONFIG_PATH.toString());
+
+        log(
+                "sing-box config: "
+                        + SING_BOX_CONFIG_PATH
+        );
 
 
         /*
-         * Проверяем конфигурацию перед запуском.
+         * --------------------------------------------------------
+         * GENERATE READY WIREGUARD CONFIG
+         * --------------------------------------------------------
          */
 
-        log("Starting sing-box...");
+        generateWireGuardConfig(
+                WIREGUARD_CONFIG_PATH
+        );
 
-        NativeService singBox =
+
+        log(
+                "WireGuard config: "
+                        + WIREGUARD_CONFIG_PATH
+        );
+
+
+        /*
+         * --------------------------------------------------------
+         * START ONLY SING-BOX
+         * --------------------------------------------------------
+         */
+
+        List<NativeService> services =
+                new ArrayList<>();
+
+
+        services.add(
                 new NativeService(
                         "sing-box",
                         singBoxLib,
                         "StartSingBox",
                         "StopSingBox",
                         singboxPayload()
-                );
+                )
+        );
 
-
-        List<NativeService> services =
-                new ArrayList<>();
-
-        services.add(singBox);
-
-
-        /*
-         * Корректная остановка.
-         */
 
         Runtime.getRuntime().addShutdownHook(
                 new Thread(
@@ -232,35 +251,47 @@ public class App {
         );
 
 
-        /*
-         * Запуск.
-         */
-
         for (NativeService service : services) {
             service.start();
         }
 
 
-        sleep(1000);
+        sleep(1500);
 
+
+        log("");
         log("========================================");
-        log("sing-box is running");
-        log("WireGuard outbound is active");
-        log("All traffic -> WireGuard");
+        log("sing-box started");
         log("========================================");
+        log("");
+        log(
+                "Config: "
+                        + SING_BOX_CONFIG_PATH
+        );
+        log(
+                "WireGuard: "
+                        + WIREGUARD_CONFIG_PATH
+        );
+        log("");
+        log("Traffic:");
+        log("Application -> sing-box -> WireGuard -> Internet");
+        log("");
 
 
         /*
-         * Оставляем процесс запущенным.
+         * --------------------------------------------------------
+         * KEEP PROCESS RUNNING
+         * --------------------------------------------------------
          */
 
-        new CountDownLatch(1).await();
+        new CountDownLatch(1)
+                .await();
     }
 
 
     /*
      * ============================================================
-     * Остановка сервисов
+     * STOP ALL SERVICES
      * ============================================================
      */
 
@@ -269,12 +300,20 @@ public class App {
     ) {
 
         log("");
-        log("Stopping all services...");
+        log("Stopping services...");
 
-        for (int i = services.size() - 1; i >= 0; i--) {
+
+        for (
+                int i = services.size() - 1;
+                i >= 0;
+                i--
+        ) {
 
             try {
-                services.get(i).stop();
+
+                services
+                        .get(i)
+                        .stop();
 
             } catch (Exception ignored) {
             }
@@ -284,7 +323,7 @@ public class App {
 
     /*
      * ============================================================
-     * Native service
+     * NATIVE SERVICE
      * ============================================================
      */
 
@@ -314,7 +353,9 @@ public class App {
             this.startSymbol = startSymbol;
             this.stopSymbol = stopSymbol;
             this.payload =
-                    payload == null ? "" : payload;
+                    payload == null
+                            ? ""
+                            : payload;
         }
 
 
@@ -325,10 +366,12 @@ public class App {
                             libPath.toString()
                     );
 
+
             Function startFunction =
                     library.getFunction(
                             startSymbol
                     );
+
 
             stopFunction =
                     library.getFunction(
@@ -349,11 +392,12 @@ public class App {
                                                     }
                                             );
 
+
                                     if (code != 0) {
 
                                         log(
                                                 name
-                                                        + " native service exited with code "
+                                                        + " exited with code "
                                                         + code
                                         );
                                     }
@@ -362,7 +406,7 @@ public class App {
 
                                     log(
                                             name
-                                                    + " native service failed: "
+                                                    + " failed: "
                                                     + e.getMessage()
                                     );
                                 }
@@ -381,7 +425,12 @@ public class App {
 
         void stop() {
 
-            if (!running || stopFunction == null) {
+            if (
+                    !running
+                            ||
+                    stopFunction == null
+            ) {
+
                 return;
             }
 
@@ -393,7 +442,9 @@ public class App {
                                 new Object[]{}
                         );
 
+
                 running = false;
+
 
                 log(
                         name
@@ -416,7 +467,405 @@ public class App {
 
     /*
      * ============================================================
-     * Скачать sing-box native library
+     * SING-BOX CONFIG
+     * ============================================================
+     *
+     * Только:
+     *
+     *     WireGuard endpoint
+     *
+     * Входящих протоколов нет.
+     *
+     * Весь трафик:
+     *
+     *     -> wireguard-out
+     *
+     * ============================================================
+     */
+
+    private static Map<String, Object>
+    generateSingBoxConfig() {
+
+
+        /*
+         * --------------------------------------------------------
+         * WIREGUARD PEER
+         * --------------------------------------------------------
+         */
+
+        Map<String, Object> peer =
+                mapOf(
+
+                        "address",
+                        WG_SERVER,
+
+                        "port",
+                        WG_PORT,
+
+                        "public_key",
+                        WG_PUBLIC_KEY,
+
+                        "allowed_ips",
+                        listOf(
+                                "0.0.0.0/0",
+                                "::/0"
+                        ),
+
+                        "reserved",
+                        listOf(
+                                78,
+                                135,
+                                76
+                        )
+                );
+
+
+        /*
+         * --------------------------------------------------------
+         * WIREGUARD ENDPOINT
+         * --------------------------------------------------------
+         */
+
+        Map<String, Object> wireguard =
+                mapOf(
+
+                        "type",
+                        "wireguard",
+
+                        "tag",
+                        "wireguard-out",
+
+                        "mtu",
+                        WG_MTU,
+
+                        "address",
+                        listOf(
+                                WG_ADDRESS4,
+                                WG_ADDRESS6
+                        ),
+
+                        "private_key",
+                        WG_PRIVATE_KEY,
+
+                        "peers",
+                        listOf(peer)
+                );
+
+
+        /*
+         * --------------------------------------------------------
+         * CONFIG
+         * --------------------------------------------------------
+         */
+
+        return mapOf(
+
+                /*
+                 * LOG
+                 */
+
+                "log",
+                mapOf(
+                        "disabled",
+                        true,
+
+                        "level",
+                        "error",
+
+                        "timestamp",
+                        true
+                ),
+
+
+                /*
+                 * NO INBOUNDS
+                 */
+
+                "inbounds",
+                new ArrayList<>(),
+
+
+                /*
+                 * WIREGUARD
+                 */
+
+                "endpoints",
+                listOf(
+                        wireguard
+                ),
+
+
+                /*
+                 * NO OTHER OUTBOUNDS
+                 */
+
+                "outbounds",
+                new ArrayList<>(),
+
+
+                /*
+                 * ALL TRAFFIC -> WIREGUARD
+                 */
+
+                "route",
+                mapOf(
+
+                        "rules",
+                        new ArrayList<>(),
+
+                        "final",
+                        "wireguard-out"
+                )
+        );
+    }
+
+
+    /*
+     * ============================================================
+     * GENERATE READY WIREGUARD CONFIG
+     * ============================================================
+     */
+
+    private static void generateWireGuardConfig(
+            Path output
+    ) throws IOException {
+
+
+        StringBuilder config =
+                new StringBuilder();
+
+
+        /*
+         * --------------------------------------------------------
+         * INTERFACE
+         * --------------------------------------------------------
+         */
+
+        config.append(
+                "[Interface]\n"
+        );
+
+
+        config.append(
+                "PrivateKey = "
+        );
+
+        config.append(
+                WG_PRIVATE_KEY
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        config.append(
+                "Address = "
+        );
+
+        config.append(
+                WG_ADDRESS4
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        if (
+                WG_ADDRESS6 != null
+                        &&
+                !WG_ADDRESS6.isBlank()
+        ) {
+
+            config.append(
+                    "Address = "
+            );
+
+            config.append(
+                    WG_ADDRESS6
+            );
+
+            config.append(
+                    "\n"
+            );
+        }
+
+
+        config.append(
+                "MTU = "
+        );
+
+        config.append(
+                WG_MTU
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        /*
+         * DNS.
+         *
+         * Можно изменить через WG_DNS.
+         */
+
+        String dns =
+                env(
+                        "WG_DNS",
+                        "1.1.1.1, 1.0.0.1"
+                );
+
+
+        config.append(
+                "DNS = "
+        );
+
+        config.append(
+                dns
+        );
+
+        config.append(
+                "\n\n"
+        );
+
+
+        /*
+         * --------------------------------------------------------
+         * PEER
+         * --------------------------------------------------------
+         */
+
+        config.append(
+                "[Peer]\n"
+        );
+
+
+        config.append(
+                "PublicKey = "
+        );
+
+        config.append(
+                WG_PUBLIC_KEY
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        config.append(
+                "Endpoint = "
+        );
+
+        config.append(
+                WG_SERVER
+        );
+
+        config.append(
+                ":"
+        );
+
+        config.append(
+                WG_PORT
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        config.append(
+                "AllowedIPs = 0.0.0.0/0, ::/0\n"
+        );
+
+
+        /*
+         * PersistentKeepalive нужен для клиентов
+         * за NAT/mobile network.
+         */
+
+        config.append(
+                "PersistentKeepalive = "
+        );
+
+        config.append(
+                envInt(
+                        "WG_KEEPALIVE",
+                        25
+                )
+        );
+
+        config.append(
+                "\n"
+        );
+
+
+        /*
+         * --------------------------------------------------------
+         * WRITE FILE
+         * --------------------------------------------------------
+         */
+
+        Files.writeString(
+                output,
+                config.toString(),
+                StandardCharsets.UTF_8
+        );
+
+
+        /*
+         * Только владелец может читать файл.
+         */
+
+        try {
+
+            output.toFile()
+                    .setReadable(
+                            true,
+                            true
+                    );
+
+            output.toFile()
+                    .setWritable(
+                            true,
+                            true
+                    );
+
+        } catch (Exception ignored) {
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * SING-BOX PAYLOAD
+     * ============================================================
+     */
+
+    private static String singboxPayload() {
+
+        return toJson(
+                mapOf(
+
+                        "config",
+                        SING_BOX_CONFIG_PATH
+                                .toString(),
+
+                        "workingDir",
+                        ".",
+
+                        "disableColor",
+                        true
+                )
+        );
+    }
+
+
+    /*
+     * ============================================================
+     * DOWNLOAD LIBRARY
      * ============================================================
      */
 
@@ -425,14 +874,25 @@ public class App {
             String fileName
     ) throws Exception {
 
+
         Path target =
-                RUNTIME_DIR.resolve(fileName);
+                RUNTIME_DIR.resolve(
+                        fileName
+                );
 
 
-        if (Files.exists(target)) {
+        /*
+         * Используем уже скачанный файл.
+         */
+
+        if (
+                Files.exists(target)
+                        &&
+                Files.size(target) > 0
+        ) {
 
             log(
-                    "Using cached native library: "
+                    "Using cached library: "
                             + target
             );
 
@@ -445,14 +905,15 @@ public class App {
         );
 
 
-        Path tmp =
+        Path temporary =
                 RUNTIME_DIR.resolve(
-                        fileName + ".download"
+                        fileName
+                                + ".download"
                 );
 
 
         log(
-                "Downloading "
+                "Downloading: "
                         + url
         );
 
@@ -471,7 +932,8 @@ public class App {
         HttpResponse<byte[]> response =
                 HTTP.send(
                         request,
-                        HttpResponse.BodyHandlers.ofByteArray()
+                        HttpResponse.BodyHandlers
+                                .ofByteArray()
                 );
 
 
@@ -491,22 +953,23 @@ public class App {
 
 
         Files.write(
-                tmp,
+                temporary,
                 response.body()
         );
 
 
         Files.move(
-                tmp,
+                temporary,
                 target,
                 StandardCopyOption.REPLACE_EXISTING
         );
 
 
-        target.toFile().setExecutable(
-                true,
-                false
-        );
+        target.toFile()
+                .setExecutable(
+                        true,
+                        false
+                );
 
 
         return target;
@@ -515,261 +978,21 @@ public class App {
 
     /*
      * ============================================================
-     * sing-box CONFIG
-     * ============================================================
-     *
-     * Только WireGuard endpoint.
-     *
-     * НЕТ:
-     *
-     * VMess
-     * VLESS
-     * Reality
-     * Hysteria2
-     * TUIC
-     * SOCKS5
-     * AnyTLS
-     * Argo
-     * Nezha
-     *
-     * Весь трафик:
-     *
-     * application
-     *      ↓
-     * sing-box
-     *      ↓
-     * wireguard-out
-     *      ↓
-     * Cloudflare WARP
-     *      ↓
-     * Internet
-     */
-
-    private static Map<String, Object>
-    generateSingBoxConfig() {
-
-
-        /*
-         * ========================================================
-         * WireGuard endpoint
-         * ========================================================
-         */
-
-        Map<String, Object> peer =
-                mapOf(
-
-                        "address",
-                        WG_SERVER,
-
-                        "port",
-                        WG_PORT,
-
-                        "public_key",
-                        WG_PUBLIC_KEY,
-
-                        /*
-                         * Весь IPv4 и IPv6 трафик
-                         * отправляется в WireGuard.
-                         */
-
-                        "allowed_ips",
-                        listOf(
-                                "0.0.0.0/0",
-                                "::/0"
-                        ),
-
-                        /*
-                         * Cloudflare WARP reserved bytes.
-                         */
-
-                        "reserved",
-                        listOf(
-                                78,
-                                135,
-                                76
-                        )
-                );
-
-
-        Map<String, Object> wireguard =
-                mapOf(
-
-                        "type",
-                        "wireguard",
-
-                        "tag",
-                        "wireguard-out",
-
-                        "mtu",
-                        WG_MTU,
-
-                        /*
-                         * Адреса интерфейса WireGuard.
-                         */
-
-                        "address",
-                        listOf(
-                                WG_ADDRESS4,
-                                WG_ADDRESS6
-                        ),
-
-                        /*
-                         * Приватный ключ клиента.
-                         */
-
-                        "private_key",
-                        WG_PRIVATE_KEY,
-
-                        /*
-                         * Peer Cloudflare WARP.
-                         */
-
-                        "peers",
-                        listOf(peer)
-                );
-
-
-        List<Object> endpoints =
-                listOf(
-                        wireguard
-                );
-
-
-        /*
-         * ========================================================
-         * Outbounds
-         * ========================================================
-         *
-         * Для endpoint WireGuard отдельный direct outbound
-         * не нужен.
-         *
-         * Endpoint wireguard-out используется непосредственно
-         * в route.final.
-         */
-
-        List<Object> outbounds =
-                new ArrayList<>();
-
-
-        /*
-         * ========================================================
-         * Route
-         * ========================================================
-         *
-         * Никаких правил доменов.
-         *
-         * Весь трафик -> wireguard-out.
-         */
-
-        Map<String, Object> route =
-                mapOf(
-
-                        "rules",
-                        new ArrayList<>(),
-
-                        "final",
-                        "wireguard-out"
-                );
-
-
-        /*
-         * ========================================================
-         * Полный sing-box config
-         * ========================================================
-         */
-
-        return mapOf(
-
-                /*
-                 * Логи выключены.
-                 */
-
-                "log",
-                mapOf(
-                        "disabled",
-                        true,
-
-                        "level",
-                        "error",
-
-                        "timestamp",
-                        true
-                ),
-
-
-                /*
-                 * Никаких inbound.
-                 */
-
-                "inbounds",
-                new ArrayList<>(),
-
-
-                /*
-                 * Единственный endpoint.
-                 */
-
-                "endpoints",
-                endpoints,
-
-
-                /*
-                 * Outbounds.
-                 *
-                 * Оставляем пустым, поскольку WireGuard
-                 * используется как endpoint.
-                 */
-
-                "outbounds",
-                outbounds,
-
-
-                /*
-                 * Routing.
-                 */
-
-                "route",
-                route
-        );
-    }
-
-
-    /*
-     * ============================================================
-     * Payload для sing-box
-     * ============================================================
-     */
-
-    private static String singboxPayload() {
-
-        return toJson(
-                mapOf(
-                        "config",
-                        SING_BOX_CONFIG_PATH.toString(),
-
-                        "workingDir",
-                        ".",
-
-                        "disableColor",
-                        true
-                )
-        );
-    }
-
-
-    /*
-     * ============================================================
-     * Очистка старых файлов
+     * CLEAN OLD FILES
      * ============================================================
      */
 
     private static void cleanupOldFiles() {
 
+        /*
+         * Не удаляем wireguard.conf,
+         * чтобы готовый конфиг сохранялся.
+         */
+
         List<String> files =
                 List.of(
                         "boot.log",
                         "list.txt",
-                        "config.json",
                         "config.yaml",
                         "cert.pem",
                         "private.key",
@@ -784,23 +1007,20 @@ public class App {
             try {
 
                 Files.deleteIfExists(
-                        RUNTIME_DIR.resolve(file)
+                        RUNTIME_DIR.resolve(
+                                file
+                        )
                 );
 
             } catch (IOException ignored) {
             }
         }
-
-
-        deleteDirectory(
-                ROOT.resolve(".tmp")
-        );
     }
 
 
     /*
      * ============================================================
-     * Удаление директории
+     * DELETE DIRECTORY
      * ============================================================
      */
 
@@ -808,7 +1028,12 @@ public class App {
             Path path
     ) {
 
-        if (!Files.exists(path)) {
+        if (
+                path == null
+                        ||
+                !Files.exists(path)
+        ) {
+
             return;
         }
 
@@ -862,9 +1087,10 @@ public class App {
         HttpResponse<String> response =
                 HTTP.send(
                         request,
-                        HttpResponse.BodyHandlers.ofString(
-                                StandardCharsets.UTF_8
-                        )
+                        HttpResponse.BodyHandlers
+                                .ofString(
+                                        StandardCharsets.UTF_8
+                                )
                 );
 
 
@@ -907,32 +1133,38 @@ public class App {
                                 "application/json"
                         )
                         .POST(
-                                HttpRequest.BodyPublishers.ofString(
-                                        json,
-                                        StandardCharsets.UTF_8
-                                )
+                                HttpRequest.BodyPublishers
+                                        .ofString(
+                                                json,
+                                                StandardCharsets.UTF_8
+                                        )
                         )
                         .build();
 
 
         HTTP.send(
                 request,
-                HttpResponse.BodyHandlers.discarding()
+                HttpResponse.BodyHandlers
+                        .discarding()
         );
     }
 
 
     /*
      * ============================================================
-     * Command
+     * COMMAND
      * ============================================================
      */
 
     private static int runCommand(
             String... command
-    ) throws IOException, InterruptedException {
+    )
+            throws IOException,
+            InterruptedException {
 
-        return new ProcessBuilder(command)
+        return new ProcessBuilder(
+                command
+        )
                 .redirectErrorStream(true)
                 .start()
                 .waitFor();
@@ -941,7 +1173,7 @@ public class App {
 
     /*
      * ============================================================
-     * JSON serializer
+     * JSON SERIALIZER
      * ============================================================
      */
 
@@ -957,7 +1189,9 @@ public class App {
         if (value instanceof String) {
 
             return "\""
-                    + escapeJson((String) value)
+                    + escapeJson(
+                            (String) value
+                    )
                     + "\"";
         }
 
@@ -981,15 +1215,15 @@ public class App {
             return map.entrySet()
                     .stream()
                     .map(
-                            e ->
+                            entry ->
                                     toJson(
                                             String.valueOf(
-                                                    e.getKey()
+                                                    entry.getKey()
                                             )
                                     )
                                             + ":"
                                             + toJson(
-                                            e.getValue()
+                                            entry.getValue()
                                     )
                     )
                     .collect(
@@ -1004,15 +1238,14 @@ public class App {
 
         if (value instanceof Iterable<?>) {
 
-            Iterable<?> iterable =
-                    (Iterable<?>) value;
-
-
             List<String> items =
                     new ArrayList<>();
 
 
-            for (Object item : iterable) {
+            for (
+                    Object item :
+                    (Iterable<?>) value
+            ) {
 
                 items.add(
                         toJson(item)
@@ -1020,12 +1253,14 @@ public class App {
             }
 
 
-            return "["
-                    + String.join(
-                    ",",
-                    items
-            )
-                    + "]";
+            return items.stream()
+                    .collect(
+                            Collectors.joining(
+                                    ",",
+                                    "[",
+                                    "]"
+                            )
+                    );
         }
 
 
@@ -1037,7 +1272,7 @@ public class App {
 
     /*
      * ============================================================
-     * JSON escape
+     * JSON ESCAPE
      * ============================================================
      */
 
@@ -1104,11 +1339,12 @@ public class App {
 
     /*
      * ============================================================
-     * Map helper
+     * MAP
      * ============================================================
      */
 
-    private static Map<String, Object> mapOf(
+    private static Map<String, Object>
+    mapOf(
             Object... values
     ) {
 
@@ -1123,7 +1359,9 @@ public class App {
         ) {
 
             map.put(
-                    String.valueOf(values[i]),
+                    String.valueOf(
+                            values[i]
+                    ),
                     values[i + 1]
             );
         }
@@ -1135,11 +1373,12 @@ public class App {
 
     /*
      * ============================================================
-     * List helper
+     * LIST
      * ============================================================
      */
 
-    private static List<Object> listOf(
+    private static List<Object>
+    listOf(
             Object... values
     ) {
 
@@ -1151,7 +1390,7 @@ public class App {
 
     /*
      * ============================================================
-     * Environment
+     * ENV
      * ============================================================
      */
 
@@ -1171,15 +1410,23 @@ public class App {
         }
 
 
-        return value == null || value.isEmpty()
-                ? fallback
-                : value;
+        if (
+                value == null
+                        ||
+                value.isEmpty()
+        ) {
+
+            return fallback;
+        }
+
+
+        return value;
     }
 
 
     /*
      * ============================================================
-     * Environment integer
+     * ENV INTEGER
      * ============================================================
      */
 
@@ -1193,7 +1440,9 @@ public class App {
             return Integer.parseInt(
                     env(
                             name,
-                            String.valueOf(fallback)
+                            String.valueOf(
+                                    fallback
+                            )
                     )
             );
 
@@ -1206,7 +1455,7 @@ public class App {
 
     /*
      * ============================================================
-     * Load .env
+     * LOAD .ENV
      * ============================================================
      */
 
@@ -1223,7 +1472,9 @@ public class App {
                         .normalize();
 
 
-        if (!Files.exists(envPath)) {
+        if (
+                !Files.exists(envPath)
+        ) {
 
             return values;
         }
@@ -1264,11 +1515,13 @@ public class App {
 
     /*
      * ============================================================
-     * Parse .env line
+     * PARSE .ENV
      * ============================================================
      */
 
-    private static Optional<Map.Entry<String, String>>
+    private static Optional<
+            Map.Entry<String, String>
+            >
     parseDotEnvLine(
             String line
     ) {
@@ -1288,13 +1541,15 @@ public class App {
 
 
         if (
-                trimmed.startsWith("export ")
+                trimmed.startsWith(
+                        "export "
+                )
         ) {
 
             trimmed =
                     trimmed
                             .substring(
-                                    "export ".length()
+                                    7
                             )
                             .trim();
         }
@@ -1312,7 +1567,10 @@ public class App {
 
         String key =
                 trimmed
-                        .substring(0, equals)
+                        .substring(
+                                0,
+                                equals
+                        )
                         .trim();
 
 
@@ -1324,14 +1582,18 @@ public class App {
 
         String value =
                 trimmed
-                        .substring(equals + 1)
+                        .substring(
+                                equals + 1
+                        )
                         .trim();
 
 
         return Optional.of(
                 Map.entry(
                         key,
-                        parseDotEnvValue(value)
+                        parseDotEnvValue(
+                                value
+                        )
                 )
         );
     }
@@ -1339,22 +1601,29 @@ public class App {
 
     /*
      * ============================================================
-     * Parse .env value
+     * PARSE .ENV VALUE
      * ============================================================
      */
 
-    private static String parseDotEnvValue(
+    private static String
+    parseDotEnvValue(
             String value
     ) {
 
-        if (value.length() >= 2) {
+        if (
+                value.length() >= 2
+        ) {
 
             char quote =
                     value.charAt(0);
 
 
             if (
-                    (quote == '"' || quote == '\'')
+                    (
+                            quote == '"'
+                                    ||
+                            quote == '\''
+                    )
                             &&
                     value.charAt(
                             value.length() - 1
@@ -1368,9 +1637,15 @@ public class App {
                         );
 
 
-                return quote == '"'
-                        ? unescapeDotEnvValue(value)
-                        : value;
+                if (quote == '"') {
+
+                    return unescapeDotEnvValue(
+                            value
+                    );
+                }
+
+
+                return value;
             }
         }
 
@@ -1383,11 +1658,12 @@ public class App {
 
     /*
      * ============================================================
-     * Inline comments
+     * INLINE COMMENT
      * ============================================================
      */
 
-    private static String stripInlineComment(
+    private static String
+    stripInlineComment(
             String value
     ) {
 
@@ -1404,7 +1680,9 @@ public class App {
                             i == 0
                                     ||
                             Character.isWhitespace(
-                                    value.charAt(i - 1)
+                                    value.charAt(
+                                            i - 1
+                                    )
                             )
                     )
             ) {
@@ -1423,11 +1701,12 @@ public class App {
 
     /*
      * ============================================================
-     * Unescape .env
+     * UNESCAPE .ENV
      * ============================================================
      */
 
-    private static String unescapeDotEnvValue(
+    private static String
+    unescapeDotEnvValue(
             String value
     ) {
 
@@ -1454,18 +1733,22 @@ public class App {
                 switch (c) {
 
                     case 'n':
+
                         out.append('\n');
                         break;
 
                     case 'r':
+
                         out.append('\r');
                         break;
 
                     case 't':
+
                         out.append('\t');
                         break;
 
                     default:
+
                         out.append(c);
                         break;
                 }
@@ -1473,7 +1756,9 @@ public class App {
 
                 escaped = false;
 
-            } else if (c == '\\') {
+            } else if (
+                    c == '\\'
+            ) {
 
                 escaped = true;
 
@@ -1496,7 +1781,7 @@ public class App {
 
     /*
      * ============================================================
-     * Architecture
+     * ARCHITECTURE
      * ============================================================
      */
 
@@ -1506,13 +1791,18 @@ public class App {
                 System.getProperty(
                         "os.arch",
                         ""
-                ).toLowerCase();
+                )
+                        .toLowerCase();
 
 
         if (
-                arch.contains("aarch64")
+                arch.contains(
+                        "aarch64"
+                )
                         ||
-                arch.contains("arm64")
+                arch.contains(
+                        "arm64"
+                )
         ) {
 
             return "arm64";
@@ -1525,7 +1815,7 @@ public class App {
 
     /*
      * ============================================================
-     * Log
+     * LOG
      * ============================================================
      */
 
@@ -1544,7 +1834,7 @@ public class App {
 
     /*
      * ============================================================
-     * Sleep
+     * SLEEP
      * ============================================================
      */
 
@@ -1554,11 +1844,16 @@ public class App {
 
         try {
 
-            Thread.sleep(millis);
+            Thread.sleep(
+                    millis
+            );
 
-        } catch (InterruptedException e) {
+        } catch (
+                InterruptedException e
+        ) {
 
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                    .interrupt();
         }
     }
 }
