@@ -52,51 +52,43 @@ public class App {
 
     /*
      * ============================================================
-     * WIREGUARD / CLOUDFLARE WARP
+     * GENERIC WIREGUARD
+     * ============================================================
+     *
+     * Никакого Cloudflare/WARP.
+     *
+     * Все параметры обычного WireGuard задаются
+     * через .env или environment variables Pterodactyl.
+     *
      * ============================================================
      */
 
     private static final String WG_PRIVATE_KEY =
-            env(
-                    "WG_PRIVATE_KEY",
-                    "YFYOAdbw1bKTHlNNi+aEjBM3BO7unuFC5rOkMRAz9XY="
-            );
+            env("WG_PRIVATE_KEY", "");
 
     private static final String WG_ADDRESS4 =
-            env(
-                    "WG_ADDRESS4",
-                    "172.16.0.2/32"
-            );
+            env("WG_ADDRESS4", "");
 
     private static final String WG_ADDRESS6 =
-            env(
-                    "WG_ADDRESS6",
-                    "2606:4700:110:8dfe:d141:69bb:6b80:925/128"
-            );
+            env("WG_ADDRESS6", "");
 
     private static final String WG_SERVER =
-            env(
-                    "WG_SERVER",
-                    "engage.cloudflareclient.com"
-            );
+            env("WG_SERVER", "");
 
     private static final int WG_PORT =
-            envInt(
-                    "WG_PORT",
-                    2408
-            );
+            envInt("WG_PORT", 51820);
 
     private static final String WG_PUBLIC_KEY =
-            env(
-                    "WG_PUBLIC_KEY",
-                    "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-            );
+            env("WG_PUBLIC_KEY", "");
 
     private static final int WG_MTU =
-            envInt(
-                    "WG_MTU",
-                    1280
-            );
+            envInt("WG_MTU", 1280);
+
+    private static final String WG_DNS =
+            env("WG_DNS", "1.1.1.1, 1.0.0.1");
+
+    private static final int WG_KEEPALIVE =
+            envInt("WG_KEEPALIVE", 25);
 
 
     /*
@@ -146,6 +138,8 @@ public class App {
     private static void startServer()
             throws Exception {
 
+        validateWireGuardConfig();
+
         Files.createDirectories(
                 RUNTIME_DIR
         );
@@ -157,12 +151,14 @@ public class App {
         log("========================================");
 
         log("Architecture: " + ARCH);
+
         log(
                 "WireGuard endpoint: "
                         + WG_SERVER
                         + ":"
                         + WG_PORT
         );
+
         log("WireGuard MTU: " + WG_MTU);
 
 
@@ -264,17 +260,22 @@ public class App {
         log("sing-box started");
         log("========================================");
         log("");
+
         log(
                 "Config: "
                         + SING_BOX_CONFIG_PATH
         );
+
         log(
                 "WireGuard: "
                         + WIREGUARD_CONFIG_PATH
         );
+
         log("");
+
         log("Traffic:");
         log("Application -> sing-box -> WireGuard -> Internet");
+
         log("");
 
 
@@ -286,6 +287,74 @@ public class App {
 
         new CountDownLatch(1)
                 .await();
+    }
+
+
+    /*
+     * ============================================================
+     * VALIDATE WIREGUARD CONFIG
+     * ============================================================
+     */
+
+    private static void validateWireGuardConfig()
+            throws IllegalArgumentException {
+
+        List<String> errors =
+                new ArrayList<>();
+
+
+        if (
+                WG_PRIVATE_KEY.isBlank()
+        ) {
+
+            errors.add(
+                    "WG_PRIVATE_KEY is not set"
+            );
+        }
+
+
+        if (
+                WG_PUBLIC_KEY.isBlank()
+        ) {
+
+            errors.add(
+                    "WG_PUBLIC_KEY is not set"
+            );
+        }
+
+
+        if (
+                WG_SERVER.isBlank()
+        ) {
+
+            errors.add(
+                    "WG_SERVER is not set"
+            );
+        }
+
+
+        if (
+                WG_ADDRESS4.isBlank()
+                        &&
+                WG_ADDRESS6.isBlank()
+        ) {
+
+            errors.add(
+                    "WG_ADDRESS4 or WG_ADDRESS6 must be set"
+            );
+        }
+
+
+        if (!errors.isEmpty()) {
+
+            throw new IllegalArgumentException(
+                    "WireGuard configuration error:\n"
+                            + String.join(
+                            "\n",
+                            errors
+                    )
+            );
+        }
     }
 
 
@@ -352,6 +421,7 @@ public class App {
             this.libPath = libPath;
             this.startSymbol = startSymbol;
             this.stopSymbol = stopSymbol;
+
             this.payload =
                     payload == null
                             ? ""
@@ -470,15 +540,28 @@ public class App {
      * SING-BOX CONFIG
      * ============================================================
      *
-     * Только:
+     * Только WireGuard.
      *
-     *     WireGuard endpoint
-     *
-     * Входящих протоколов нет.
+     * Нет:
+     * - Cloudflare WARP
+     * - HTTP proxy
+     * - SOCKS
+     * - VLESS
+     * - Shadowsocks
+     * - входящих протоколов
      *
      * Весь трафик:
      *
-     *     -> wireguard-out
+     *     Application
+     *          |
+     *          v
+     *       sing-box
+     *          |
+     *          v
+     *      WireGuard
+     *          |
+     *          v
+     *       Internet
      *
      * ============================================================
      */
@@ -509,13 +592,6 @@ public class App {
                         listOf(
                                 "0.0.0.0/0",
                                 "::/0"
-                        ),
-
-                        "reserved",
-                        listOf(
-                                78,
-                                135,
-                                76
                         )
                 );
 
@@ -539,10 +615,7 @@ public class App {
                         WG_MTU,
 
                         "address",
-                        listOf(
-                                WG_ADDRESS4,
-                                WG_ADDRESS6
-                        ),
+                        wireguardAddresses(),
 
                         "private_key",
                         WG_PRIVATE_KEY,
@@ -566,6 +639,7 @@ public class App {
 
                 "log",
                 mapOf(
+
                         "disabled",
                         true,
 
@@ -622,6 +696,46 @@ public class App {
 
     /*
      * ============================================================
+     * WIREGUARD ADDRESSES
+     * ============================================================
+     */
+
+    private static List<Object> wireguardAddresses() {
+
+        List<Object> addresses =
+                new ArrayList<>();
+
+
+        if (
+                WG_ADDRESS4 != null
+                        &&
+                !WG_ADDRESS4.isBlank()
+        ) {
+
+            addresses.add(
+                    WG_ADDRESS4
+            );
+        }
+
+
+        if (
+                WG_ADDRESS6 != null
+                        &&
+                !WG_ADDRESS6.isBlank()
+        ) {
+
+            addresses.add(
+                    WG_ADDRESS6
+            );
+        }
+
+
+        return addresses;
+    }
+
+
+    /*
+     * ============================================================
      * GENERATE READY WIREGUARD CONFIG
      * ============================================================
      */
@@ -659,17 +773,24 @@ public class App {
         );
 
 
-        config.append(
-                "Address = "
-        );
+        if (
+                WG_ADDRESS4 != null
+                        &&
+                !WG_ADDRESS4.isBlank()
+        ) {
 
-        config.append(
-                WG_ADDRESS4
-        );
+            config.append(
+                    "Address = "
+            );
 
-        config.append(
-                "\n"
-        );
+            config.append(
+                    WG_ADDRESS4
+            );
+
+            config.append(
+                    "\n"
+            );
+        }
 
 
         if (
@@ -706,24 +827,17 @@ public class App {
 
 
         /*
-         * DNS.
-         *
-         * Можно изменить через WG_DNS.
+         * --------------------------------------------------------
+         * DNS
+         * --------------------------------------------------------
          */
-
-        String dns =
-                env(
-                        "WG_DNS",
-                        "1.1.1.1, 1.0.0.1"
-                );
-
 
         config.append(
                 "DNS = "
         );
 
         config.append(
-                dns
+                WG_DNS
         );
 
         config.append(
@@ -782,8 +896,7 @@ public class App {
 
 
         /*
-         * PersistentKeepalive нужен для клиентов
-         * за NAT/mobile network.
+         * PersistentKeepalive
          */
 
         config.append(
@@ -791,10 +904,7 @@ public class App {
         );
 
         config.append(
-                envInt(
-                        "WG_KEEPALIVE",
-                        25
-                )
+                WG_KEEPALIVE
         );
 
         config.append(
@@ -985,8 +1095,7 @@ public class App {
     private static void cleanupOldFiles() {
 
         /*
-         * Не удаляем wireguard.conf,
-         * чтобы готовый конфиг сохранялся.
+         * wireguard.conf НЕ удаляем.
          */
 
         List<String> files =
