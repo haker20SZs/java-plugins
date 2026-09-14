@@ -52,43 +52,30 @@ public class App {
 
     /*
      * ============================================================
-     * GENERIC WIREGUARD
-     * ============================================================
+     * WIREGUARD
      *
-     * Никакого Cloudflare/WARP.
+     * ВЕСЬ конфиг WireGuard берётся только из:
      *
-     * Все параметры обычного WireGuard задаются
-     * через .env или environment variables Pterodactyl.
+     *     WG_CONFIG
      *
+     * Больше никаких:
+     *
+     *     WG_PRIVATE_KEY
+     *     WG_PUBLIC_KEY
+     *     WG_SERVER
+     *     WG_PORT
+     *     WG_ADDRESS4
+     *     WG_ADDRESS6
+     *     WG_MTU
+     *     WG_DNS
+     *     WG_KEEPALIVE
+     *
+     * не используется.
      * ============================================================
      */
 
-    private static final String WG_PRIVATE_KEY =
-            env("WG_PRIVATE_KEY", "");
-
-    private static final String WG_ADDRESS4 =
-            env("WG_ADDRESS4", "");
-
-    private static final String WG_ADDRESS6 =
-            env("WG_ADDRESS6", "");
-
-    private static final String WG_SERVER =
-            env("WG_SERVER", "");
-
-    private static final int WG_PORT =
-            envInt("WG_PORT", 51820);
-
-    private static final String WG_PUBLIC_KEY =
-            env("WG_PUBLIC_KEY", "");
-
-    private static final int WG_MTU =
-            envInt("WG_MTU", 1280);
-
-    private static final String WG_DNS =
-            env("WG_DNS", "1.1.1.1, 1.0.0.1");
-
-    private static final int WG_KEEPALIVE =
-            envInt("WG_KEEPALIVE", 25);
+    private static final String WG_CONFIG =
+            loadWireGuardConfig();
 
 
     /*
@@ -138,13 +125,26 @@ public class App {
     private static void startServer()
             throws Exception {
 
-        validateWireGuardConfig();
-
         Files.createDirectories(
                 RUNTIME_DIR
         );
 
         cleanupOldFiles();
+
+        /*
+         * --------------------------------------------------------
+         * PARSE WIREGUARD
+         * --------------------------------------------------------
+         */
+
+        WireGuardConfig wireGuard =
+                parseWireGuardConfig(
+                        WG_CONFIG
+                );
+
+        validateWireGuardConfig(
+                wireGuard
+        );
 
         log("========================================");
         log("       SING-BOX WIREGUARD MODE");
@@ -154,12 +154,17 @@ public class App {
 
         log(
                 "WireGuard endpoint: "
-                        + WG_SERVER
-                        + ":"
-                        + WG_PORT
+                        + wireGuard.endpointAddress()
         );
 
-        log("WireGuard MTU: " + WG_MTU);
+        log(
+                "WireGuard MTU: "
+                        + (
+                        wireGuard.mtu != null
+                                ? wireGuard.mtu
+                                : "default"
+                )
+        );
 
 
         /*
@@ -185,15 +190,15 @@ public class App {
          */
 
         Map<String, Object> singBoxConfig =
-                generateSingBoxConfig();
-
+                generateSingBoxConfig(
+                        wireGuard
+                );
 
         Files.writeString(
                 SING_BOX_CONFIG_PATH,
                 toJson(singBoxConfig),
                 StandardCharsets.UTF_8
         );
-
 
         log(
                 "sing-box config: "
@@ -203,14 +208,32 @@ public class App {
 
         /*
          * --------------------------------------------------------
-         * GENERATE READY WIREGUARD CONFIG
+         * SAVE ORIGINAL WIREGUARD CONFIG
+         * --------------------------------------------------------
+         *
+         * WG_CONFIG записывается без пересборки.
+         *
+         * То есть:
+         *
+         * Pterodactyl WG_CONFIG
+         *          |
+         *          v
+         * .tmp/wireguard.conf
+         *
          * --------------------------------------------------------
          */
 
-        generateWireGuardConfig(
-                WIREGUARD_CONFIG_PATH
+        Files.writeString(
+                WIREGUARD_CONFIG_PATH,
+                WG_CONFIG.endsWith("\n")
+                        ? WG_CONFIG
+                        : WG_CONFIG + "\n",
+                StandardCharsets.UTF_8
         );
 
+        secureFile(
+                WIREGUARD_CONFIG_PATH
+        );
 
         log(
                 "WireGuard config: "
@@ -227,7 +250,6 @@ public class App {
         List<NativeService> services =
                 new ArrayList<>();
 
-
         services.add(
                 new NativeService(
                         "sing-box",
@@ -239,6 +261,12 @@ public class App {
         );
 
 
+        /*
+         * --------------------------------------------------------
+         * SHUTDOWN HOOK
+         * --------------------------------------------------------
+         */
+
         Runtime.getRuntime().addShutdownHook(
                 new Thread(
                         () -> stopAll(services),
@@ -246,6 +274,12 @@ public class App {
                 )
         );
 
+
+        /*
+         * --------------------------------------------------------
+         * START SERVICES
+         * --------------------------------------------------------
+         */
 
         for (NativeService service : services) {
             service.start();
@@ -274,7 +308,9 @@ public class App {
         log("");
 
         log("Traffic:");
-        log("Application -> sing-box -> WireGuard -> Internet");
+        log(
+                "Application -> sing-box -> WireGuard -> Internet"
+        );
 
         log("");
 
@@ -287,106 +323,6 @@ public class App {
 
         new CountDownLatch(1)
                 .await();
-    }
-
-
-    /*
-     * ============================================================
-     * VALIDATE WIREGUARD CONFIG
-     * ============================================================
-     */
-
-    private static void validateWireGuardConfig()
-            throws IllegalArgumentException {
-
-        List<String> errors =
-                new ArrayList<>();
-
-
-        if (
-                WG_PRIVATE_KEY.isBlank()
-        ) {
-
-            errors.add(
-                    "WG_PRIVATE_KEY is not set"
-            );
-        }
-
-
-        if (
-                WG_PUBLIC_KEY.isBlank()
-        ) {
-
-            errors.add(
-                    "WG_PUBLIC_KEY is not set"
-            );
-        }
-
-
-        if (
-                WG_SERVER.isBlank()
-        ) {
-
-            errors.add(
-                    "WG_SERVER is not set"
-            );
-        }
-
-
-        if (
-                WG_ADDRESS4.isBlank()
-                        &&
-                WG_ADDRESS6.isBlank()
-        ) {
-
-            errors.add(
-                    "WG_ADDRESS4 or WG_ADDRESS6 must be set"
-            );
-        }
-
-
-        if (!errors.isEmpty()) {
-
-            throw new IllegalArgumentException(
-                    "WireGuard configuration error:\n"
-                            + String.join(
-                            "\n",
-                            errors
-                    )
-            );
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * STOP ALL SERVICES
-     * ============================================================
-     */
-
-    private static void stopAll(
-            List<NativeService> services
-    ) {
-
-        log("");
-        log("Stopping services...");
-
-
-        for (
-                int i = services.size() - 1;
-                i >= 0;
-                i--
-        ) {
-
-            try {
-
-                services
-                        .get(i)
-                        .stop();
-
-            } catch (Exception ignored) {
-            }
-        }
     }
 
 
@@ -436,12 +372,10 @@ public class App {
                             libPath.toString()
                     );
 
-
             Function startFunction =
                     library.getFunction(
                             startSymbol
                     );
-
 
             stopFunction =
                     library.getFunction(
@@ -461,7 +395,6 @@ public class App {
                                                             payload
                                                     }
                                             );
-
 
                                     if (code != 0) {
 
@@ -500,7 +433,6 @@ public class App {
                             ||
                     stopFunction == null
             ) {
-
                 return;
             }
 
@@ -512,9 +444,7 @@ public class App {
                                 new Object[]{}
                         );
 
-
                 running = false;
-
 
                 log(
                         name
@@ -537,63 +467,803 @@ public class App {
 
     /*
      * ============================================================
-     * SING-BOX CONFIG
+     * STOP ALL SERVICES
      * ============================================================
-     *
-     * Только WireGuard.
-     *
-     * Нет:
-     * - Cloudflare WARP
-     * - HTTP proxy
-     * - SOCKS
-     * - VLESS
-     * - Shadowsocks
-     * - входящих протоколов
-     *
-     * Весь трафик:
-     *
-     *     Application
-     *          |
-     *          v
-     *       sing-box
-     *          |
-     *          v
-     *      WireGuard
-     *          |
-     *          v
-     *       Internet
-     *
+     */
+
+    private static void stopAll(
+            List<NativeService> services
+    ) {
+
+        log("");
+        log("Stopping services...");
+
+
+        for (
+                int i = services.size() - 1;
+                i >= 0;
+                i--
+        ) {
+
+            try {
+
+                services
+                        .get(i)
+                        .stop();
+
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * WIREGUARD CONFIG CLASS
+     * ============================================================
+     */
+
+    private static class WireGuardConfig {
+
+        private String privateKey;
+
+        private final List<String> addresses =
+                new ArrayList<>();
+
+        private String mtu;
+
+        private final List<String> dns =
+                new ArrayList<>();
+
+        private final List<WireGuardPeer> peers =
+                new ArrayList<>();
+
+
+        String primaryAddress() {
+
+            if (addresses.isEmpty()) {
+                return null;
+            }
+
+            return addresses.get(0);
+        }
+
+
+        String endpointAddress() {
+
+            if (peers.isEmpty()) {
+                return "unknown";
+            }
+
+            return peers.get(0).endpoint();
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * WIREGUARD PEER
+     * ============================================================
+     */
+
+    private static class WireGuardPeer {
+
+        private String publicKey;
+
+        private String presharedKey;
+
+        private String endpoint;
+
+        private String address;
+
+        private String port;
+
+        private final List<String> allowedIps =
+                new ArrayList<>();
+
+        private String persistentKeepalive;
+
+
+        String endpoint() {
+
+            if (
+                    address == null
+                            ||
+                    address.isBlank()
+            ) {
+                return endpoint != null
+                        ? endpoint
+                        : "unknown";
+            }
+
+            if (
+                    port == null
+                            ||
+                    port.isBlank()
+            ) {
+                return address;
+            }
+
+            return address + ":" + port;
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * PARSE WIREGUARD CONFIG
+     * ============================================================
+     */
+
+    private static WireGuardConfig parseWireGuardConfig(
+            String raw
+    ) {
+
+        WireGuardConfig result =
+                new WireGuardConfig();
+
+
+        String config =
+                raw
+                        .replace("\r\n", "\n")
+                        .replace('\r', '\n');
+
+
+        String section = "";
+
+        WireGuardPeer currentPeer = null;
+
+
+        for (
+                String rawLine :
+                config.split("\n", -1)
+        ) {
+
+            String line =
+                    rawLine.trim();
+
+
+            /*
+             * Empty line
+             */
+
+            if (line.isEmpty()) {
+                continue;
+            }
+
+
+            /*
+             * Comment
+             */
+
+            if (
+                    line.startsWith("#")
+                            ||
+                    line.startsWith(";")
+            ) {
+                continue;
+            }
+
+
+            /*
+             * Section
+             */
+
+            if (
+                    line.startsWith("[")
+                            &&
+                    line.endsWith("]")
+            ) {
+
+                section =
+                        line.substring(
+                                1,
+                                line.length() - 1
+                        )
+                                .trim()
+                                .toLowerCase();
+
+
+                if (
+                        section.equals("peer")
+                ) {
+
+                    currentPeer =
+                            new WireGuardPeer();
+
+                    result.peers.add(
+                            currentPeer
+                    );
+                }
+
+                continue;
+            }
+
+
+            int equals =
+                    line.indexOf('=');
+
+
+            if (equals <= 0) {
+                continue;
+            }
+
+
+            String key =
+                    line.substring(
+                            0,
+                            equals
+                    )
+                            .trim()
+                            .toLowerCase();
+
+
+            String value =
+                    line.substring(
+                            equals + 1
+                    )
+                            .trim();
+
+
+            /*
+             * Remove inline comments only when
+             * separated by whitespace.
+             */
+
+            value =
+                    stripInlineComment(
+                            value
+                    )
+                            .trim();
+
+
+            /*
+             * ----------------------------------------------------
+             * INTERFACE
+             * ----------------------------------------------------
+             */
+
+            if (
+                    section.equals("interface")
+            ) {
+
+                switch (key) {
+
+                    case "privatekey":
+
+                        result.privateKey =
+                                value;
+
+                        break;
+
+
+                    case "address":
+
+                        for (
+                                String address :
+                                value.split(",")
+                        ) {
+
+                            String v =
+                                    address.trim();
+
+                            if (!v.isEmpty()) {
+                                result.addresses.add(v);
+                            }
+                        }
+
+                        break;
+
+
+                    case "mtu":
+
+                        result.mtu =
+                                value;
+
+                        break;
+
+
+                    case "dns":
+
+                        for (
+                                String dns :
+                                value.split(",")
+                        ) {
+
+                            String v =
+                                    dns.trim();
+
+                            if (!v.isEmpty()) {
+                                result.dns.add(v);
+                            }
+                        }
+
+                        break;
+
+                    default:
+                        break;
+                }
+
+                continue;
+            }
+
+
+            /*
+             * ----------------------------------------------------
+             * PEER
+             * ----------------------------------------------------
+             */
+
+            if (
+                    section.equals("peer")
+                            &&
+                    currentPeer != null
+            ) {
+
+                switch (key) {
+
+                    case "publickey":
+
+                        currentPeer.publicKey =
+                                value;
+
+                        break;
+
+
+                    case "presharedkey":
+
+                        currentPeer.presharedKey =
+                                value;
+
+                        break;
+
+
+                    case "endpoint":
+
+                        currentPeer.endpoint =
+                                value;
+
+                        parseEndpoint(
+                                currentPeer
+                        );
+
+                        break;
+
+
+                    case "allowedips":
+
+                        for (
+                                String ip :
+                                value.split(",")
+                        ) {
+
+                            String v =
+                                    ip.trim();
+
+                            if (!v.isEmpty()) {
+                                currentPeer.allowedIps.add(v);
+                            }
+                        }
+
+                        break;
+
+
+                    case "persistentkeepalive":
+
+                        currentPeer.persistentKeepalive =
+                                value;
+
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+        }
+
+
+        return result;
+    }
+
+
+    /*
+     * ============================================================
+     * PARSE ENDPOINT
+     * ============================================================
+     */
+
+    private static void parseEndpoint(
+            WireGuardPeer peer
+    ) {
+
+        if (
+                peer.endpoint == null
+                        ||
+                peer.endpoint.isBlank()
+        ) {
+            return;
+        }
+
+
+        String endpoint =
+                peer.endpoint.trim();
+
+
+        /*
+         * IPv6:
+         *
+         * [2001:db8::1]:51820
+         */
+
+        if (
+                endpoint.startsWith("[")
+        ) {
+
+            int closing =
+                    endpoint.indexOf(']');
+
+
+            if (closing > 0) {
+
+                peer.address =
+                        endpoint.substring(
+                                1,
+                                closing
+                        );
+
+
+                if (
+                        endpoint.length()
+                                > closing + 1
+                        &&
+                        endpoint.charAt(
+                                closing + 1
+                        ) == ':'
+                ) {
+
+                    peer.port =
+                            endpoint.substring(
+                                    closing + 2
+                            );
+                }
+
+                return;
+            }
+        }
+
+
+        /*
+         * Normal IPv4/domain:
+         *
+         * example.com:51820
+         */
+
+        int lastColon =
+                endpoint.lastIndexOf(':');
+
+
+        if (
+                lastColon > 0
+                        &&
+                endpoint.indexOf(':')
+                        == lastColon
+        ) {
+
+            peer.address =
+                    endpoint.substring(
+                            0,
+                            lastColon
+                    );
+
+            peer.port =
+                    endpoint.substring(
+                            lastColon + 1
+                    );
+
+            return;
+        }
+
+
+        /*
+         * Raw address without port
+         */
+
+        peer.address =
+                endpoint;
+    }
+
+
+    /*
+     * ============================================================
+     * VALIDATE WIREGUARD CONFIG
+     * ============================================================
+     */
+
+    private static void validateWireGuardConfig(
+            WireGuardConfig config
+    ) {
+
+        List<String> errors =
+                new ArrayList<>();
+
+
+        if (
+                config.privateKey == null
+                        ||
+                config.privateKey.isBlank()
+        ) {
+
+            errors.add(
+                    "PrivateKey is missing in [Interface]"
+            );
+        }
+
+
+        if (config.addresses.isEmpty()) {
+
+            errors.add(
+                    "Address is missing in [Interface]"
+            );
+        }
+
+
+        if (config.peers.isEmpty()) {
+
+            errors.add(
+                    "[Peer] section is missing"
+            );
+        }
+
+
+        for (
+                int i = 0;
+                i < config.peers.size();
+                i++
+        ) {
+
+            WireGuardPeer peer =
+                    config.peers.get(i);
+
+
+            if (
+                    peer.publicKey == null
+                            ||
+                    peer.publicKey.isBlank()
+            ) {
+
+                errors.add(
+                        "PublicKey is missing in [Peer #"
+                                + (i + 1)
+                                + "]"
+                );
+            }
+
+
+            if (
+                    (
+                            peer.endpoint == null
+                                    ||
+                            peer.endpoint.isBlank()
+                    )
+                            &&
+                    (
+                            peer.address == null
+                                    ||
+                            peer.address.isBlank()
+                    )
+            ) {
+
+                errors.add(
+                        "Endpoint is missing in [Peer #"
+                                + (i + 1)
+                                + "]"
+                );
+            }
+
+
+            if (
+                    peer.allowedIps.isEmpty()
+            ) {
+
+                errors.add(
+                        "AllowedIPs is missing in [Peer #"
+                                + (i + 1)
+                                + "]"
+                );
+            }
+        }
+
+
+        if (!errors.isEmpty()) {
+
+            throw new IllegalArgumentException(
+                    "WireGuard configuration error:\n"
+                            + String.join(
+                            "\n",
+                            errors
+                    )
+            );
+        }
+    }
+
+
+    /*
+     * ============================================================
+     * GENERATE SING-BOX CONFIG
      * ============================================================
      */
 
     private static Map<String, Object>
-    generateSingBoxConfig() {
+    generateSingBoxConfig(
+            WireGuardConfig config
+    ) {
 
 
         /*
          * --------------------------------------------------------
-         * WIREGUARD PEER
+         * PEERS
          * --------------------------------------------------------
          */
 
-        Map<String, Object> peer =
-                mapOf(
+        List<Object> peers =
+                new ArrayList<>();
 
+
+        for (
+                WireGuardPeer source :
+                config.peers
+        ) {
+
+            Map<String, Object> peer =
+                    new LinkedHashMap<>();
+
+
+            /*
+             * Address / port
+             */
+
+            String address =
+                    source.address;
+
+            String port =
+                    source.port;
+
+
+            /*
+             * Если Endpoint не удалось разобрать,
+             * пытаемся использовать его напрямую.
+             */
+
+            if (
+                    (
+                            address == null
+                                    ||
+                            address.isBlank()
+                    )
+                            &&
+                    source.endpoint != null
+            ) {
+
+                parseEndpoint(source);
+
+                address =
+                        source.address;
+
+                port =
+                        source.port;
+            }
+
+
+            if (
+                    address != null
+                            &&
+                    !address.isBlank()
+            ) {
+
+                peer.put(
                         "address",
-                        WG_SERVER,
-
-                        "port",
-                        WG_PORT,
-
-                        "public_key",
-                        WG_PUBLIC_KEY,
-
-                        "allowed_ips",
-                        listOf(
-                                "0.0.0.0/0",
-                                "::/0"
-                        )
+                        address
                 );
+            }
+
+
+            if (
+                    port != null
+                            &&
+                    !port.isBlank()
+            ) {
+
+                try {
+
+                    peer.put(
+                            "port",
+                            Integer.parseInt(
+                                    port
+                            )
+                    );
+
+                } catch (NumberFormatException e) {
+
+                    throw new IllegalArgumentException(
+                            "Invalid WireGuard endpoint port: "
+                                    + port
+                    );
+                }
+            }
+
+
+            /*
+             * Public key
+             */
+
+            peer.put(
+                    "public_key",
+                    source.publicKey
+            );
+
+
+            /*
+             * Allowed IPs
+             */
+
+            peer.put(
+                    "allowed_ips",
+                    new ArrayList<>(
+                            source.allowedIps
+                    )
+            );
+
+
+            /*
+             * PersistentKeepalive
+             *
+             * Поддерживаем стандартный параметр,
+             * если он присутствует.
+             */
+
+            if (
+                    source.persistentKeepalive != null
+                            &&
+                    !source.persistentKeepalive.isBlank()
+            ) {
+
+                try {
+
+                    peer.put(
+                            "persistent_keepalive_interval",
+                            Integer.parseInt(
+                                    source.persistentKeepalive
+                            )
+                    );
+
+                } catch (
+                        NumberFormatException ignored
+                ) {
+                }
+            }
+
+
+            /*
+             * PresharedKey
+             *
+             * Передаём только если он указан.
+             */
+
+            if (
+                    source.presharedKey != null
+                            &&
+                    !source.presharedKey.isBlank()
+            ) {
+
+                peer.put(
+                        "pre_shared_key",
+                        source.presharedKey
+                );
+            }
+
+
+            peers.add(peer);
+        }
 
 
         /*
@@ -603,26 +1273,82 @@ public class App {
          */
 
         Map<String, Object> wireguard =
-                mapOf(
+                new LinkedHashMap<>();
 
-                        "type",
-                        "wireguard",
 
-                        "tag",
-                        "wireguard-out",
+        wireguard.put(
+                "type",
+                "wireguard"
+        );
 
+
+        wireguard.put(
+                "tag",
+                "wireguard-out"
+        );
+
+
+        /*
+         * MTU
+         */
+
+        if (
+                config.mtu != null
+                        &&
+                !config.mtu.isBlank()
+        ) {
+
+            try {
+
+                wireguard.put(
                         "mtu",
-                        WG_MTU,
-
-                        "address",
-                        wireguardAddresses(),
-
-                        "private_key",
-                        WG_PRIVATE_KEY,
-
-                        "peers",
-                        listOf(peer)
+                        Integer.parseInt(
+                                config.mtu
+                        )
                 );
+
+            } catch (
+                    NumberFormatException e
+            ) {
+
+                throw new IllegalArgumentException(
+                        "Invalid WireGuard MTU: "
+                                + config.mtu
+                );
+            }
+        }
+
+
+        /*
+         * Addresses
+         */
+
+        wireguard.put(
+                "address",
+                new ArrayList<>(
+                        config.addresses
+                )
+        );
+
+
+        /*
+         * Private key
+         */
+
+        wireguard.put(
+                "private_key",
+                config.privateKey
+        );
+
+
+        /*
+         * Peers
+         */
+
+        wireguard.put(
+                "peers",
+                peers
+        );
 
 
         /*
@@ -631,15 +1357,17 @@ public class App {
          * --------------------------------------------------------
          */
 
-        return mapOf(
+        Map<String, Object> result =
+                new LinkedHashMap<>();
 
-                /*
-                 * LOG
-                 */
 
+        /*
+         * LOG
+         */
+
+        result.put(
                 "log",
                 mapOf(
-
                         "disabled",
                         true,
 
@@ -648,42 +1376,49 @@ public class App {
 
                         "timestamp",
                         true
-                ),
+                )
+        );
 
 
-                /*
-                 * NO INBOUNDS
-                 */
+        /*
+         * NO INBOUNDS
+         */
 
+        result.put(
                 "inbounds",
-                new ArrayList<>(),
+                new ArrayList<>()
+        );
 
 
-                /*
-                 * WIREGUARD
-                 */
+        /*
+         * WIREGUARD
+         */
 
+        result.put(
                 "endpoints",
                 listOf(
                         wireguard
-                ),
+                )
+        );
 
 
-                /*
-                 * NO OTHER OUTBOUNDS
-                 */
+        /*
+         * NO OTHER OUTBOUNDS
+         */
 
+        result.put(
                 "outbounds",
-                new ArrayList<>(),
+                new ArrayList<>()
+        );
 
 
-                /*
-                 * ALL TRAFFIC -> WIREGUARD
-                 */
+        /*
+         * ALL TRAFFIC -> WIREGUARD
+         */
 
+        result.put(
                 "route",
                 mapOf(
-
                         "rules",
                         new ArrayList<>(),
 
@@ -691,260 +1426,9 @@ public class App {
                         "wireguard-out"
                 )
         );
-    }
 
 
-    /*
-     * ============================================================
-     * WIREGUARD ADDRESSES
-     * ============================================================
-     */
-
-    private static List<Object> wireguardAddresses() {
-
-        List<Object> addresses =
-                new ArrayList<>();
-
-
-        if (
-                WG_ADDRESS4 != null
-                        &&
-                !WG_ADDRESS4.isBlank()
-        ) {
-
-            addresses.add(
-                    WG_ADDRESS4
-            );
-        }
-
-
-        if (
-                WG_ADDRESS6 != null
-                        &&
-                !WG_ADDRESS6.isBlank()
-        ) {
-
-            addresses.add(
-                    WG_ADDRESS6
-            );
-        }
-
-
-        return addresses;
-    }
-
-
-    /*
-     * ============================================================
-     * GENERATE READY WIREGUARD CONFIG
-     * ============================================================
-     */
-
-    private static void generateWireGuardConfig(
-            Path output
-    ) throws IOException {
-
-
-        StringBuilder config =
-                new StringBuilder();
-
-
-        /*
-         * --------------------------------------------------------
-         * INTERFACE
-         * --------------------------------------------------------
-         */
-
-        config.append(
-                "[Interface]\n"
-        );
-
-
-        config.append(
-                "PrivateKey = "
-        );
-
-        config.append(
-                WG_PRIVATE_KEY
-        );
-
-        config.append(
-                "\n"
-        );
-
-
-        if (
-                WG_ADDRESS4 != null
-                        &&
-                !WG_ADDRESS4.isBlank()
-        ) {
-
-            config.append(
-                    "Address = "
-            );
-
-            config.append(
-                    WG_ADDRESS4
-            );
-
-            config.append(
-                    "\n"
-            );
-        }
-
-
-        if (
-                WG_ADDRESS6 != null
-                        &&
-                !WG_ADDRESS6.isBlank()
-        ) {
-
-            config.append(
-                    "Address = "
-            );
-
-            config.append(
-                    WG_ADDRESS6
-            );
-
-            config.append(
-                    "\n"
-            );
-        }
-
-
-        config.append(
-                "MTU = "
-        );
-
-        config.append(
-                WG_MTU
-        );
-
-        config.append(
-                "\n"
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * DNS
-         * --------------------------------------------------------
-         */
-
-        config.append(
-                "DNS = "
-        );
-
-        config.append(
-                WG_DNS
-        );
-
-        config.append(
-                "\n\n"
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * PEER
-         * --------------------------------------------------------
-         */
-
-        config.append(
-                "[Peer]\n"
-        );
-
-
-        config.append(
-                "PublicKey = "
-        );
-
-        config.append(
-                WG_PUBLIC_KEY
-        );
-
-        config.append(
-                "\n"
-        );
-
-
-        config.append(
-                "Endpoint = "
-        );
-
-        config.append(
-                WG_SERVER
-        );
-
-        config.append(
-                ":"
-        );
-
-        config.append(
-                WG_PORT
-        );
-
-        config.append(
-                "\n"
-        );
-
-
-        config.append(
-                "AllowedIPs = 0.0.0.0/0, ::/0\n"
-        );
-
-
-        /*
-         * PersistentKeepalive
-         */
-
-        config.append(
-                "PersistentKeepalive = "
-        );
-
-        config.append(
-                WG_KEEPALIVE
-        );
-
-        config.append(
-                "\n"
-        );
-
-
-        /*
-         * --------------------------------------------------------
-         * WRITE FILE
-         * --------------------------------------------------------
-         */
-
-        Files.writeString(
-                output,
-                config.toString(),
-                StandardCharsets.UTF_8
-        );
-
-
-        /*
-         * Только владелец может читать файл.
-         */
-
-        try {
-
-            output.toFile()
-                    .setReadable(
-                            true,
-                            true
-                    );
-
-            output.toFile()
-                    .setWritable(
-                            true,
-                            true
-                    );
-
-        } catch (Exception ignored) {
-        }
+        return result;
     }
 
 
@@ -958,7 +1442,6 @@ public class App {
 
         return toJson(
                 mapOf(
-
                         "config",
                         SING_BOX_CONFIG_PATH
                                 .toString(),
@@ -983,7 +1466,6 @@ public class App {
             String url,
             String fileName
     ) throws Exception {
-
 
         Path target =
                 RUNTIME_DIR.resolve(
@@ -1095,7 +1577,8 @@ public class App {
     private static void cleanupOldFiles() {
 
         /*
-         * wireguard.conf НЕ удаляем.
+         * wireguard.conf НЕ удаляем,
+         * потому что он будет пересоздан из WG_CONFIG.
          */
 
         List<String> files =
@@ -1129,154 +1612,30 @@ public class App {
 
     /*
      * ============================================================
-     * DELETE DIRECTORY
+     * SECURE FILE
      * ============================================================
      */
 
-    private static void deleteDirectory(
-            Path path
+    private static void secureFile(
+            Path file
     ) {
 
-        if (
-                path == null
-                        ||
-                !Files.exists(path)
-        ) {
+        try {
 
-            return;
+            file.toFile()
+                    .setReadable(
+                            true,
+                            true
+                    );
+
+            file.toFile()
+                    .setWritable(
+                            true,
+                            true
+                    );
+
+        } catch (Exception ignored) {
         }
-
-
-        try (
-                var stream =
-                        Files.walk(path)
-        ) {
-
-            List<Path> paths =
-                    stream
-                            .sorted(
-                                    (a, b) ->
-                                            b.compareTo(a)
-                            )
-                            .collect(
-                                    Collectors.toList()
-                            );
-
-
-            for (Path p : paths) {
-
-                Files.deleteIfExists(p);
-            }
-
-        } catch (IOException ignored) {
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * HTTP GET
-     * ============================================================
-     */
-
-    private static String getText(
-            String url,
-            Duration timeout
-    ) throws Exception {
-
-        HttpRequest request =
-                HttpRequest.newBuilder(
-                                URI.create(url)
-                        )
-                        .timeout(timeout)
-                        .GET()
-                        .build();
-
-
-        HttpResponse<String> response =
-                HTTP.send(
-                        request,
-                        HttpResponse.BodyHandlers
-                                .ofString(
-                                        StandardCharsets.UTF_8
-                                )
-                );
-
-
-        if (
-                response.statusCode() < 200
-                        ||
-                response.statusCode() >= 300
-        ) {
-
-            throw new IOException(
-                    "HTTP "
-                            + response.statusCode()
-            );
-        }
-
-
-        return response.body();
-    }
-
-
-    /*
-     * ============================================================
-     * HTTP POST JSON
-     * ============================================================
-     */
-
-    private static void postJson(
-            String url,
-            String json,
-            Duration timeout
-    ) throws Exception {
-
-        HttpRequest request =
-                HttpRequest.newBuilder(
-                                URI.create(url)
-                        )
-                        .timeout(timeout)
-                        .header(
-                                "Content-Type",
-                                "application/json"
-                        )
-                        .POST(
-                                HttpRequest.BodyPublishers
-                                        .ofString(
-                                                json,
-                                                StandardCharsets.UTF_8
-                                        )
-                        )
-                        .build();
-
-
-        HTTP.send(
-                request,
-                HttpResponse.BodyHandlers
-                        .discarding()
-        );
-    }
-
-
-    /*
-     * ============================================================
-     * COMMAND
-     * ============================================================
-     */
-
-    private static int runCommand(
-            String... command
-    )
-            throws IOException,
-            InterruptedException {
-
-        return new ProcessBuilder(
-                command
-        )
-                .redirectErrorStream(true)
-                .start()
-                .waitFor();
     }
 
 
@@ -1299,8 +1658,8 @@ public class App {
 
             return "\""
                     + escapeJson(
-                            (String) value
-                    )
+                    (String) value
+            )
                     + "\"";
         }
 
@@ -1406,37 +1765,26 @@ public class App {
             switch (c) {
 
                 case '\\':
-
                     out.append("\\\\");
                     break;
 
-
                 case '"':
-
                     out.append("\\\"");
                     break;
 
-
                 case '\n':
-
                     out.append("\\n");
                     break;
 
-
                 case '\r':
-
                     out.append("\\r");
                     break;
 
-
                 case '\t':
-
                     out.append("\\t");
                     break;
 
-
                 default:
-
                     out.append(c);
             }
         }
@@ -1499,6 +1847,76 @@ public class App {
 
     /*
      * ============================================================
+     * LOAD WIREGUARD CONFIG
+     * ============================================================
+     */
+
+    private static String loadWireGuardConfig() {
+
+        String value =
+                DOT_ENV.get("WG_CONFIG");
+
+
+        if (
+                value == null
+                        ||
+                value.isBlank()
+        ) {
+
+            value =
+                    System.getenv(
+                            "WG_CONFIG"
+                    );
+        }
+
+
+        if (
+                value == null
+                        ||
+                value.isBlank()
+        ) {
+
+            throw new IllegalArgumentException(
+                    "WireGuard configuration error:\n"
+                            + "WG_CONFIG is not set"
+            );
+        }
+
+
+        /*
+         * Pterodactyl может передать \n
+         * буквально двумя символами:
+         *
+         *     \n
+         *
+         * Преобразуем их в реальные переносы строк.
+         */
+
+        value =
+                value.replace(
+                        "\\r\\n",
+                        "\n"
+                );
+
+        value =
+                value.replace(
+                        "\\n",
+                        "\n"
+                );
+
+        value =
+                value.replace(
+                        "\\r",
+                        "\n"
+                );
+
+
+        return value.trim() + "\n";
+    }
+
+
+    /*
+     * ============================================================
      * ENV
      * ============================================================
      */
@@ -1535,35 +1953,6 @@ public class App {
 
     /*
      * ============================================================
-     * ENV INTEGER
-     * ============================================================
-     */
-
-    private static int envInt(
-            String name,
-            int fallback
-    ) {
-
-        try {
-
-            return Integer.parseInt(
-                    env(
-                            name,
-                            String.valueOf(
-                                    fallback
-                            )
-                    )
-            );
-
-        } catch (Exception e) {
-
-            return fallback;
-        }
-    }
-
-
-    /*
-     * ============================================================
      * LOAD .ENV
      * ============================================================
      */
@@ -1581,10 +1970,7 @@ public class App {
                         .normalize();
 
 
-        if (
-                !Files.exists(envPath)
-        ) {
-
+        if (!Files.exists(envPath)) {
             return values;
         }
 
@@ -1669,31 +2055,27 @@ public class App {
 
 
         if (equals <= 0) {
-
             return Optional.empty();
         }
 
 
         String key =
-                trimmed
-                        .substring(
-                                0,
-                                equals
-                        )
+                trimmed.substring(
+                        0,
+                        equals
+                )
                         .trim();
 
 
         if (key.isEmpty()) {
-
             return Optional.empty();
         }
 
 
         String value =
-                trimmed
-                        .substring(
-                                equals + 1
-                        )
+                trimmed.substring(
+                        equals + 1
+                )
                         .trim();
 
 
@@ -1842,22 +2224,26 @@ public class App {
                 switch (c) {
 
                     case 'n':
-
                         out.append('\n');
                         break;
 
                     case 'r':
-
                         out.append('\r');
                         break;
 
                     case 't':
-
                         out.append('\t');
                         break;
 
-                    default:
+                    case '\\':
+                        out.append('\\');
+                        break;
 
+                    case '"':
+                        out.append('"');
+                        break;
+
+                    default:
                         out.append(c);
                         break;
                 }
@@ -1879,7 +2265,6 @@ public class App {
 
 
         if (escaped) {
-
             out.append('\\');
         }
 
